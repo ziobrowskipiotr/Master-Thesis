@@ -11,9 +11,9 @@ scripts/vm/vm_data/
 # Python cache and datasets
 __pycache__/
 *.pyc
-datasets/*.bin
-results/*.csv
-results/*.png
+*.bin
+*.csv
+*.png
 zadanie.md
 *.pdf
 *.html
