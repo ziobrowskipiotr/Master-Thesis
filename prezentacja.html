@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="pl">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zajęcia projektowe #1 — Temat badawczy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+    rel="stylesheet">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-card: rgba(255, 255, 255, 0.04);
+      --bg-card-hover: rgba(255, 255, 255, 0.07);
+      --text-primary: #e8ecf4;
+      --text-secondary: #8892a8;
+      --text-dim: #5a6478;
+      --accent-blue: #4f8cff;
+      --accent-cyan: #00d4ff;
+      --accent-violet: #8b5cf6;
+      --accent-rose: #f43f5e;
+      --accent-amber: #f59e0b;
+      --accent-emerald: #10b981;
+      --gradient-hero: linear-gradient(135deg, #4f8cff 0%, #8b5cf6 50%, #f43f5e 100%);
+      --radius: 14px;
+    }
+
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Slide container ── */
+    .deck {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 48px 72px;
+      opacity: 0;
+      transform: translateX(60px);
+      pointer-events: none;
+      transition: opacity 0.45s cubic-bezier(.4, 0, .2, 1), transform 0.45s cubic-bezier(.4, 0, .2, 1);
+    }
+
+    .slide.active {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+
+    .slide.exit {
+      opacity: 0;
+      transform: translateX(-60px);
+    }
+
+    /* ── Background ── */
+    .bg-glow {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    .bg-glow.a {
+      width: 550px;
+      height: 550px;
+      background: rgba(79, 140, 255, 0.10);
+      top: -180px;
+      left: -80px;
+    }
+
+    .bg-glow.b {
+      width: 450px;
+      height: 450px;
+      background: rgba(139, 92, 246, 0.08);
+      bottom: -120px;
+      right: -60px;
+    }
+
+    /* ── Nav UI ── */
+    .progress-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 3px;
+      background: var(--gradient-hero);
+      transition: width 0.5s cubic-bezier(.4, 0, .2, 1);
+      z-index: 200;
+    }
+
+    .slide-number {
+      position: fixed;
+      bottom: 24px;
+      right: 36px;
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-dim);
+      z-index: 100;
+      letter-spacing: 1px;
+    }
+
+    .nav-hint {
+      position: fixed;
+      bottom: 24px;
+      left: 36px;
+      display: flex;
+      gap: 8px;
+      z-index: 100;
+    }
+
+    .nav-hint kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 30px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      font-size: 16px;
+      color: var(--text-dim);
+    }
+
+    /* ── Typography ── */
+    .tag {
+      display: inline-block;
+      padding: 8px 22px;
+      border-radius: 99px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .tag-blue {
+      background: rgba(79, 140, 255, 0.12);
+      color: var(--accent-blue);
+    }
+
+    .tag-violet {
+      background: rgba(139, 92, 246, 0.12);
+      color: var(--accent-violet);
+    }
+
+    .tag-rose {
+      background: rgba(244, 63, 94, 0.12);
+      color: var(--accent-rose);
+    }
+
+    h1 {
+      font-size: clamp(34px, 4.2vw, 56px);
+      font-weight: 800;
+      line-height: 1.25;
+      margin-bottom: 16px;
+      max-width: 1200px;
+      text-align: center;
+    }
+
+    h1 .gr {
+      background: var(--gradient-hero);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    h2 {
+      font-size: clamp(30px, 3.4vw, 48px);
+      font-weight: 700;
+      margin-bottom: 28px;
+      text-align: center;
+    }
+
+    h2 .gr {
+      background: var(--gradient-hero);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: clamp(18px, 2vw, 25px);
+      color: var(--text-secondary);
+      max-width: 900px;
+      text-align: center;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .author-info {
+      margin-top: 28px;
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 17px;
+      line-height: 1.8;
+    }
+
+    .author-info strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    /* ── Cards ── */
+    .card-grid {
+      display: grid;
+      gap: 22px;
+      width: 100%;
+      max-width: 1280px;
+    }
+
+    .card-grid.cols-2 {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .card-grid.cols-3 {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: var(--radius);
+      padding: 30px 34px;
+      transition: background 0.3s, transform 0.3s, border-color 0.3s;
+    }
+
+    .card:hover {
+      background: var(--bg-card-hover);
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .card .icon {
+      font-size: 34px;
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .card h3 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .card p,
+    .card li {
+      font-size: 17.5px;
+      color: var(--text-secondary);
+      line-height: 1.68;
+    }
+
+    .card ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .card ul li {
+      padding: 5px 0;
+    }
+
+    .card ul li::before {
+      content: "›";
+      color: var(--accent-blue);
+      font-weight: 700;
+      margin-right: 8px;
+      font-size: 20px;
+    }
+
+    /* ── Section divider in slide ── */
+    .section-label {
+      font-size: 14.5px;
+      font-weight: 600;
+      letter-spacing: 2.2px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      margin-top: 30px;
+      text-align: left;
+      width: 100%;
+      max-width: 1280px;
+    }
+
+    /* ── Two-column ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 36px;
+      width: 100%;
+      max-width: 1280px;
+    }
+
+    .two-col h3 {
+      font-size: 21px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .two-col p,
+    .two-col li {
+      font-size: 16.5px;
+      color: var(--text-secondary);
+      line-height: 1.62;
+    }
+
+    .two-col ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .two-col ul li {
+      padding: 5px 0;
+    }
+
+    .two-col ul li::before {
+      content: "▸";
+      color: var(--accent-cyan);
+      margin-right: 9px;
+      font-weight: 700;
+      font-size: 17px;
+    }
+
+    .two-col ul li strong {
+      color: var(--text-primary);
+    }
+
+    .two-col .card {
+      padding: 18px 24px;
+    }
+
+    .two-col .card h3 {
+      font-size: 18.5px;
+      margin-bottom: 6px;
+    }
+
+    .two-col .card p {
+      font-size: 15.5px;
+      line-height: 1.55;
+    }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 4px 11px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 2px 3px;
+    }
+
+    .badge-blue {
+      background: rgba(79, 140, 255, 0.15);
+      color: var(--accent-blue);
+    }
+
+    .badge-violet {
+      background: rgba(139, 92, 246, 0.15);
+      color: var(--accent-violet);
+    }
+
+    .badge-emerald {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+    }
+
+    .badge-rose {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--accent-rose);
+    }
+
+    .badge-amber {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+    }
+
+    .badge-cyan {
+      background: rgba(0, 212, 255, 0.15);
+      color: var(--accent-cyan);
+    }
+
+    /* ── Inline list row ── */
+    .tool-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      width: 100%;
+      max-width: 1280px;
+      margin-top: 14px;
+    }
+
+    .tool-chip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 22px;
+      background: var(--bg-card);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      font-size: 16.5px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .tool-chip .chip-icon {
+      font-size: 24px;
+    }
+
+    .tool-chip strong {
+      color: var(--text-primary);
+    }
+
+    /* ── Result cards ── */
+    .result-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 22px;
+      width: 100%;
+      max-width: 1280px;
+    }
+
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: var(--radius);
+      padding: 30px 28px;
+      text-align: center;
+      transition: background 0.3s, transform 0.3s;
+    }
+
+    .result-card:hover {
+      background: var(--bg-card-hover);
+      transform: translateY(-2px);
+    }
+
+    .result-card .r-icon {
+      font-size: 38px;
+      margin-bottom: 14px;
+    }
+
+    .result-card h3 {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .result-card p {
+      font-size: 16px;
+      color: var(--text-secondary);
+      line-height: 1.68;
+    }
+
+    /* animate */
+    .slide.active .card,
+    .slide.active .tool-chip,
+    .slide.active .result-card {
+      animation: fadeUp 0.4s ease both;
+    }
+
+    .slide.active .card:nth-child(1),
+    .slide.active .tool-chip:nth-child(1),
+    .slide.active .result-card:nth-child(1) {
+      animation-delay: 0.04s;
+    }
+
+    .slide.active .card:nth-child(2),
+    .slide.active .tool-chip:nth-child(2),
+    .slide.active .result-card:nth-child(2) {
+      animation-delay: 0.08s;
+    }
+
+    .slide.active .card:nth-child(3),
+    .slide.active .tool-chip:nth-child(3),
+    .slide.active .result-card:nth-child(3) {
+      animation-delay: 0.12s;
+    }
+
+    .slide.active .card:nth-child(4),
+    .slide.active .tool-chip:nth-child(4) {
+      animation-delay: 0.16s;
+    }
+
+    .slide.active .card:nth-child(5),
+    .slide.active .tool-chip:nth-child(5) {
+      animation-delay: 0.20s;
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="bg-glow a"></div>
+  <div class="bg-glow b"></div>
+
+  <div class="progress-bar" id="progressBar"></div>
+  <div class="nav-hint"><kbd>←</kbd><kbd>→</kbd></div>
+  <div class="slide-number" id="slideNumber"></div>
+
+  <div class="deck" id="deck">
+
+    <!-- ═══════════ SLAJD 1: Wprowadzenie + Problem ═══════════ -->
+    <section class="slide active" data-slide="0">
+      <span class="tag tag-blue">Zajęcia projektowe #1 · Metodyka B+R 2026/2027</span>
+      <h2>Ocena wpływu <span class="gr">mechanizmów bezpieczeństwa pamięci</span> na wydajność aplikacji
+        niskopoziomowych w architekturze ARM64 w środowiskach chmurowych</h2>
+      <p class="subtitle">Piotr Ziobrowski · Cyberbezpieczeństwo, studia II stopnia</p>
+
+      <div class="section-label" style="margin-top: 36px;">Wprowadzenie & problem naukowy</div>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="icon">🛡️</span>
+          <h3>Kontekst</h3>
+          <p>Błędy bezpieczeństwa pamięci (buffer overflow, use-after-free, type confusion) stanowią ~<strong
+              style="color:var(--accent-rose);">70% wszystkich luk CVE</strong> w dużych projektach (Chrome, Android,
+            Windows). ARM64 wprowadza sprzętowe rozszerzenia ochronne.
+          </p>
+        </div>
+        <div class="card">
+          <span class="icon">🎯</span>
+          <h3>Problem badawczy</h3>
+          <p><strong style="color:var(--accent-blue);">Jaki jest kompromis między bezpieczeństwem a wydajnością</strong>
+            przy zastosowaniu poszczególnych mechanizmów ochrony pamięci (sprzętowych i programowych) na architekturze
+            ARM64 w środowiskach chmurowych?</p>
+          <p style="margin-top:8px;">Brakuje kompleksowej, porównawczej analizy na tej platformie w środowisku
+            chmurowym.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ SLAJD 2: Zagadnienie + wkład + narzędzia ═══════════ -->
+    <section class="slide" data-slide="1">
+      <span class="tag tag-violet">Zagadnienie badawcze & wkład autorski</span>
+      <h2>Co i jak <span class="gr">badamy</span>?</h2>
+
+      <div class="two-col">
+        <div>
+          <h3>🔬 Zagadnienie do badań</h3>
+          <ul>
+            <li>Porównanie <strong>9 mechanizmów</strong> ochrony pamięci:
+              <div style="margin-top:6px;">
+                <span class="badge badge-blue">PAC</span>
+                <span class="badge badge-blue">BTI</span>
+                <span class="badge badge-violet">CFI</span>
+                <span class="badge badge-emerald">ASan</span>
+                <span class="badge badge-cyan">HWASan</span>
+                <span class="badge badge-rose">MTE sync</span>
+                <span class="badge badge-rose">MTE async</span>
+                <span class="badge badge-amber">Scudo</span>
+                <span class="badge badge-amber">Stack Canary</span>
+              </div>
+            </li>
+            <li>Pomiar <strong>narzutu wydajności</strong> (czas, wielkość plików binarnych, zużycie RAM) oraz
+              <strong>skuteczności detekcji</strong>
+              ataków
+            </li>
+            <li><strong>11 scenariuszy</strong> podatności w 3 mikro-benchmarkach (C/C++)</li>
+            <li>~50 wariantów binarek (aplikacja × bug × flaga bezpieczeństwa)</li>
+          </ul>
+
+          <h3 style="margin-top: 22px;">✍️ Wkład autorski</h3>
+          <ul>
+            <li><strong>Zestawienie zabezpieczeń</strong> - co oferuje procesor ARM64, a co dodaje kompilator</li>
+            <li><strong>3 aplikacje z realnymi podatnościami</strong> - praktyczne scenariusze ataków (C/C++)</li>
+            <li><strong>Automatyzacja badań</strong> - autorski skrypt powtarzalnie testujący każdą binarkę</li>
+            <li><strong>Bilans zysków i strat</strong> - proste wytyczne: poziom bezpieczeństwa vs spadek
+              wydajności
+            </li>
+          </ul>
+        </div>
+
+        <div>
+          <h3>🧪 Aplikacje testowe</h3>
+          <div class="card" style="margin-bottom:12px;">
+            <h3>📡 Dispatcher <span style="font-size:13px; color:var(--text-dim);">(C++)</span></h3>
+            <p>Event-dispatcher z callbackami i vtable.<br>
+              Ataki: stack overflow, pointer hijacking, vtable corruption, skok w środek funkcji</p>
+          </div>
+          <div class="card" style="margin-bottom:12px;">
+            <h3>🗄️ Key-Value Store <span style="font-size:13px; color:var(--text-dim);">(C++)</span></h3>
+            <p>In-memory store z dynamiczną alokacją.<br>
+              Ataki: use-after-free, double-free</p>
+          </div>
+          <div class="card">
+            <h3>📄 Parser TLV <span style="font-size:13px; color:var(--text-dim);">(C)</span></h3>
+            <p>Parser rekordów Type-Length-Value z pliku binarnego.<br>
+              Ataki: heap/stack/global overflow, out-of-bounds read</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ SLAJD 3: Narzędzia + oczekiwane rezultaty ═══════════ -->
+    <section class="slide" data-slide="2">
+      <span class="tag tag-rose">Narzędzia & oczekiwane rezultaty</span>
+      <h2>Czym pracujemy i czego <span class="gr">oczekujemy</span>?</h2>
+
+      <div class="section-label">Narzędzia do badań</div>
+      <div class="tool-row">
+        <div class="tool-chip"><span class="chip-icon">🔧</span><strong>LLVM / Clang</strong> — kompilacja z flagami
+          PAC, BTI, CFI, ASan, HWASan, MTE</div>
+        <div class="tool-chip"><span class="chip-icon">⚙️</span><strong>CMake</strong> — budowanie ~60 wariantów binarek
+        </div>
+        <div class="tool-chip"><span class="chip-icon">🐧</span><strong>Linux ARM64</strong> — platforma docelowa
+          (kernel z MTE/PAC/BTI)</div>
+        <div class="tool-chip"><span class="chip-icon">📊</span><strong>Python</strong> — pandas, matplotlib, seaborn —
+          pomiary i wizualizacja</div>
+        <div class="tool-chip"><span class="chip-icon">⏱️</span><strong>/usr/bin/time + clock_gettime</strong> — pomiar
+          czasu i RAM</div>
+      </div>
+
+      <div class="section-label" style="margin-top: 32px;">Oczekiwane rezultaty</div>
+      <div class="result-grid">
+        <div class="result-card">
+          <div class="r-icon">📉</div>
+          <h3>Narzut wydajności</h3>
+          <p>PAC/BTI: <strong style="color:var(--accent-emerald);">&lt;5%</strong><br>
+            MTE sync: <strong style="color:var(--accent-amber);">~5–20%</strong><br>
+            ASan: <strong style="color:var(--accent-rose);">~100%+</strong><br>
+          </p>
+        </div>
+        <div class="result-card">
+          <div class="r-icon">🛡️</div>
+          <h3>Macierz skuteczności</h3>
+          <p>Który mechanizm wykrywa jaką klasę ataków?<br>
+            Klasyfikacja: <strong style="color:var(--accent-emerald);">ZABLOKOWANO</strong> / <strong
+              style="color:var(--accent-rose);">OMINIĘTO</strong><br>
+            Analiza limitacji każdego podejścia</p>
+        </div>
+        <div class="result-card">
+          <div class="r-icon">💡</div>
+          <h3>Rekomendacje</h3>
+          <p>MTE async jako kompromis dla produkcji?<br>
+            CFI vs PAC+BTI dla control-flow?<br>
+            HWASan vs ASan w pipeline CI/CD?<br>
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const total = slides.length;
+    let cur = 0;
+
+    const bar = document.getElementById('progressBar');
+    const num = document.getElementById('slideNumber');
+
+    function update() {
+      slides.forEach((s, i) => {
+        s.classList.remove('active', 'exit');
+        if (i === cur) s.classList.add('active');
+        else if (i < cur) s.classList.add('exit');
+      });
+      bar.style.width = ((cur + 1) / total * 100) + '%';
+      num.textContent = (cur + 1) + ' / ' + total;
+    }
+
+    function go(n) { if (n >= 0 && n < total) { cur = n; update(); } }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(cur + 1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); go(cur - 1); }
+    });
+
+    let tx = 0;
+    document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; });
+    document.addEventListener('touchend', e => {
+      const d = tx - e.changedTouches[0].clientX;
+      if (Math.abs(d) > 50) d > 0 ? go(cur + 1) : go(cur - 1);
+    });
+
+    update();
+  </script>
+</body>
+
+</html>

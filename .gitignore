@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+bin/
+
+# QEMU VM disk images and cloud-init seeds
+scripts/vm/vm_data/
+*.qcow2
+*.iso
+*.img
+
+# Python cache and datasets
+__pycache__/
+*.pyc
+datasets/*.bin
+results/*.csv
+results/*.png
