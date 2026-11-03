@@ -14,3 +14,6 @@ __pycache__/
 datasets/*.bin
 results/*.csv
 results/*.png
+zadanie.md
+*.pdf
+*.html
