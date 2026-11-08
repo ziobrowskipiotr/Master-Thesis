@@ -99,10 +99,10 @@ static inline void thesis_log_exploit_success(const char *exploit_name) {
 __attribute__((constructor(101), used)) static void init_mte_mode(void) {
 #if defined(FORCE_MTE_SYNC)
     unsigned long ctrl = PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_SYNC | (0xfffeUL << PR_MTE_TAG_SHIFT);
-    const char *mode_str = "MTE Sync (SEGV_MTESERR)";
+    const char *mode_str = "MTE Synchronous Mode";
 #elif defined(FORCE_MTE_ASYNC)
     unsigned long ctrl = PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_ASYNC | (0xfffeUL << PR_MTE_TAG_SHIFT);
-    const char *mode_str = "MTE Async (SEGV_MTEAERR)";
+    const char *mode_str = "MTE Asynchronous Mode";
 #endif
 
     int res = prctl(PR_SET_TAGGED_ADDR_CTRL, ctrl, 0L, 0L, 0L);
@@ -144,15 +144,15 @@ __attribute__((constructor(101), used)) static void init_mte_mode(void) {
 }
 #elif defined(USE_SCUDO) && !defined(FORCE_MTE_SYNC) && !defined(FORCE_MTE_ASYNC) && defined(__aarch64__) && defined(__linux__)
 __attribute__((constructor(101), used)) static void init_scudo_standalone(void) {
-    // Alokator Scudo na ARM64 – włączamy TBI i maskę tagów zgodną z runtime Scudo,
-    // eliminując błędy corrupted chunk header w środowiskach glibc/QEMU:
-    unsigned long ctrl = PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_SYNC | (0xfffeUL << PR_MTE_TAG_SHIFT);
+    // Alokator Scudo w konfiguracji samodzielnej (ochrona sterty przed UAF/double-free).
+    // Włączamy wyłącznie TBI (Top-Byte Ignore) bez aktywacji pułapek sprzętowych MTE (PR_MTE_TCF_NONE):
+    unsigned long ctrl = PR_TAGGED_ADDR_ENABLE | PR_MTE_TCF_NONE;
     int res = prctl(PR_SET_TAGGED_ADDR_CTRL, ctrl, 0L, 0L, 0L);
     if (res != 0) {
         thesis_safe_write("[!] OSTRZEŻENIE: prctl(PR_SET_TAGGED_ADDR_CTRL) dla Scudo zwróciło błąd: ");
         thesis_safe_write_int("", errno);
     }
-    thesis_safe_write("[SECURITY_INIT] Aktywowano alokator Scudo (ochrona sterty)\n");
+    thesis_safe_write("[SECURITY_INIT] Aktywowano alokator Scudo (ochrona sterty, tryb TBI/checksum)\n");
 }
 #endif
 

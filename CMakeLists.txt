@@ -46,27 +46,40 @@ if(CCACHE_PROGRAM)
 endif()
 
 # ==============================================================================
-# DEFINICJE FLAG BEZPIECZEŃSTWA (CANONICAL NAMING)
+# DEFINICJE FLAG BEZPIECZEŃSTWA (CANONICAL NAMING & METODOLOGIA)
 # ==============================================================================
+# 1. Integralność przepływu sterowania (Control-Flow Integrity & Branch Protection):
+#    - FLAG_LTO: Bazowa optymalizacja linkera ThinLTO bez weryfikacji CFI.
+#      Stanowi punkt odniesienia do wyizolowania czystego kosztu weryfikacji CFI.
+#    - FLAG_CFI: Forward-edge CFI (Forward Control Flow Integrity) weryfikujący sygnatury wywołań pośrednich i vtable.
 set(FLAG_LTO "-flto=thin -fvisibility=hidden")
 set(FLAG_CFI "-flto=thin -fvisibility=hidden -fsanitize=cfi -fsanitize-trap=cfi")
 set(FLAG_PAC "-mbranch-protection=pac-ret")
 set(FLAG_BTI "-mbranch-protection=bti -Wl,-z,now")
 set(FLAG_PAC_BTI "-mbranch-protection=pac-ret+bti -Wl,-z,now")
 
+# 2. Sanitizery referencyjne (Software Instrumentation):
 set(FLAG_ASAN "-fsanitize=address")
-# HWASan na Linuksie z jawnym tagowaniem zmiennych globalnych:
+# HWASan na Linuksie z jawnym tagowaniem zmiennych globalnych (ARM TBI):
 set(FLAG_HWASAN "-fsanitize=hwaddress -mllvm -hwasan-globals=1")
 
-# Na Linuksie glibc sprzętowe MTE chroni stos przez memtag-stack oraz stertę przez zintegrowany alokator Scudo:
+# 3. Alokator Scudo vs Sprzętowe MTE (AArch64 Memory Tagging Extension):
+#    - FLAG_SCUDO: Samodzielny utwardzony alokator sterty (ochrona przed UAF/Double-Free/Heap Overflow
+#      poprzez sumy kontrolne chunków, nagłówki canary, kwarantannę i TBI). Nie zawiera tagowania
+#      stosu (-fsanitize=memtag-stack) ani sprzętowych pułapek MTE.
+#    - FLAG_MTE_SYNC: Sprzętowe tagowanie MTE w trybie synchronicznym (ochrona stosu przez memtag-stack,
+#      generowanie SEGV_MTESERR natychmiast przy naruszeniu tagu) + alokator Scudo.
+#    - FLAG_MTE_ASYNC: Sprzętowe tagowanie MTE w trybie asynchronicznym (zredukowany narzut, raportowanie
+#      opóźnione SEGV_MTEAERR przez rejestr TFSRE0_EL1).
+set(FLAG_SCUDO "-march=armv8.5-a+memtag -fsanitize=scudo -DUSE_SCUDO")
 set(FLAG_MTE_SYNC "-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=sync -fsanitize=scudo -DFORCE_MTE_SYNC")
 set(FLAG_MTE_ASYNC "-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=async -fsanitize=scudo -DFORCE_MTE_ASYNC")
-
-# Alokator Scudo (ochrona sterty z zachowaniem spójności MTE/TBI na ARM64, bez ochrony stosu):
-set(FLAG_SCUDO "-march=armv8.5-a+memtag -fsanitize=scudo -DUSE_SCUDO")
 set(FLAG_CANARY "-fstack-protector-all")
 
-# Profile synergiczne / łączone:
+# 4. Profile synergiczne / kompozytowe (Wielowarstwowa ochrona):
+#    - cfi_pac_bti: Kompleksowa ochrona przepływu sterowania (Forward-Edge CFI + Backward-Edge PAC + BTI Landing Pads)
+#    - cfi_pac_bti_mte: Profil hybrydowy łączący ochronę sterowania (CFI+PAC+BTI) ze sprzętową ochroną pamięci (MTE-Sync+Scudo)
+#    - cfi_pac_bti_mte_fortify_bounds: Profil wielowarstwowy z dodatkową walidacją granic buforów (Fortify Source + Bounds Sanitizer)
 set(FLAG_CFI_PAC_BTI "-flto=thin -fvisibility=hidden -fsanitize=cfi -fsanitize-trap=cfi -mbranch-protection=pac-ret+bti -Wl,-z,now")
 set(FLAG_CFI_PAC_BTI_MTE "-flto=thin -fvisibility=hidden -fsanitize=cfi -fsanitize-trap=cfi -mbranch-protection=pac-ret+bti -Wl,-z,now -march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=sync -fsanitize=scudo -DFORCE_MTE_SYNC")
 set(FLAG_CFI_PAC_BTI_MTE_FORTIFY_BOUNDS "-flto=thin -fvisibility=hidden -fsanitize=cfi -fsanitize-trap=cfi -mbranch-protection=pac-ret+bti -Wl,-z,now -march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=sync -fsanitize=scudo -D_FORTIFY_SOURCE=3 -fsanitize=bounds -fsanitize-trap=bounds -DFORCE_MTE_SYNC")

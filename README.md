@@ -11,17 +11,18 @@ Projekt bada **13 wariantów zabezpieczeń** w trzech domenach ochrony (przestrz
 | Mechanizm | Flagi kompilatora / linkera | Domena ochrony |
 | :--- | :--- | :--- |
 | **base** | `-O3 -march=armv8.5-a` | Brak ochrony (baseline) |
+| **lto** | `-flto=thin -fvisibility=hidden` | ThinLTO baseline (izolacja optymalizacji od CFI) |
 | **canary** | `-fstack-protector-all` | Stos (Stack Canary) |
 | **pac** | `-mbranch-protection=pac-ret` | Adres powrotu x30 / LR |
 | **bti** | `-mbranch-protection=bti -Wl,-z,now` | Lądowiska skoków pośrednich (`BTI C/J`) |
 | **pac_bti** | `-mbranch-protection=pac-ret+bti -Wl,-z,now` | ROP + JOP / COP |
-| **cfi** | `-flto=thin -fvisibility=hidden -fsanitize=cfi` | Sygnatury wywołań pośrednich i vtables |
-| **cfi_pac_bti** | CFI + PAC + BTI | Pełna integralność sterowania (Forward + Backward) |
-| **scudo** | `-march=armv8.5-a+memtag -fsanitize=scudo` | Alokator sterty (ochrona przed UAF / Double-Free) |
+| **cfi** | `-flto=thin -fvisibility=hidden -fsanitize=cfi` | Sygnatury wywołań pośrednich i vtables (Forward-Edge) |
+| **cfi_pac_bti** | CFI + PAC + BTI | Kompleksowa ochrona sterowania (Forward + Backward) |
+| **scudo** | `-march=armv8.5-a+memtag -fsanitize=scudo` | Utwardzony alokator sterty (ochrona przed UAF / Double-Free) |
 | **mte_async** | `-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=async` | Sprzętowe tagowanie MTE (tryb asynchroniczny) |
 | **mte_sync** | `-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=sync` | Sprzętowe tagowanie MTE (tryb synchroniczny) |
-| **cfi_pac_bti_mte** | CFI + PAC + BTI + MTE-Sync + Scudo | Synergia sprzętowo-kompilatorowa (Production Hardened) |
-| **cfi_pac_bti_mte_fortify_bounds** | Synergy + `-D_FORTIFY_SOURCE=3 -fsanitize=bounds` | Pełna obrona w głąb (Defense-in-Depth) |
+| **cfi_pac_bti_mte** | CFI + PAC + BTI + MTE-Sync + Scudo | Profil hybrydowy (sterowanie + pamięć MTE) |
+| **cfi_pac_bti_mte_fortify_bounds** | Profil hybrydowy + `-D_FORTIFY_SOURCE=3 -fsanitize=bounds` | Profil wielowarstwowy (weryfikacja granic buforów) |
 | **hwasan** | `-fsanitize=hwaddress -mllvm -hwasan-globals=1` | Programowe tagowanie pamięci (ARM TBI) |
 | **asan** | `-fsanitize=address` | Klasyczny AddressSanitizer (Shadow Memory 1/8) |
 

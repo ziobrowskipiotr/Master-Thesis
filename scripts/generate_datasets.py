@@ -86,6 +86,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generator powtarzalnych zbiorów danych benchmarku.")
     parser.add_argument("--force", action="store_true", help="Wymuś regenerację wszystkich plików.")
     parser.add_argument("--verify", action="store_true", help="Zweryfikuj istniejące sumy kontrolne SHA-256.")
+    parser.add_argument("--update-manifest", action="store_true", help="Zaktualizuj manifest SHA-256 dla istniejących plików.")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
@@ -115,34 +116,62 @@ def main():
                     all_ok = False
         return 0 if all_ok else 1
 
-    rng = random.Random(SEED)
+    # Izolowany seed dla każdego pliku gwarantuje pełną niezależność regeneracji pojedynczych datasetów:
+    def get_file_rng(filepath_str):
+        # Deterministyczny 32-bitowy seed wyliczony z SHA-256 nazwy i master SEED:
+        h = hashlib.sha256(f"{SEED}:{filepath_str}".encode()).digest()
+        seed_val = int.from_bytes(h[:4], 'big')
+        return random.Random(seed_val)
 
     files_to_generate = [
-        ("data/dataset_small.bin", lambda p: generate_tlv_file(p, 10_000, rng)),
-        ("data/dataset_medium.bin", lambda p: generate_tlv_file(p, 100_000, rng)),
-        ("data/dataset_large.bin", lambda p: generate_tlv_file(p, 1_000_000, rng)),
+        ("data/dataset_small.bin", lambda p: generate_tlv_file(p, 10_000, get_file_rng(p))),
+        ("data/dataset_medium.bin", lambda p: generate_tlv_file(p, 100_000, get_file_rng(p))),
+        ("data/dataset_large.bin", lambda p: generate_tlv_file(p, 1_000_000, get_file_rng(p))),
         ("data/dataset_p1_malicious.bin", generate_p1_malicious),
         ("data/dataset_p2_malicious.bin", generate_p2_malicious),
         ("data/dataset_p3_malicious.bin", generate_p3_malicious),
-        ("data/dataset_p4_malicious.bin", lambda p: generate_p4_malicious(p, rng)),
+        ("data/dataset_p4_malicious.bin", lambda p: generate_p4_malicious(p, get_file_rng(p))),
         ("data/dataset_p5_malicious.bin", generate_p5_malicious),
         ("data/dataset_p6_malicious.bin", generate_p6_malicious),
     ]
 
+    # Wczytanie istniejących sum kontrolnych, jeśli manifest istnieje
+    existing_checksums = {}
+    if os.path.exists(checksum_file):
+        with open(checksum_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split()
+                    if len(parts) == 2:
+                        existing_checksums[parts[1]] = parts[0]
+
+    regenerated_any = False
     for filepath, gen_func in files_to_generate:
-        if args.force or not os.path.exists(filepath):
+        file_exists = os.path.exists(filepath)
+        if args.force or not file_exists:
             gen_func(filepath)
+            regenerated_any = True
         else:
+            # Weryfikujemy czy istniejący plik nie różni się od zarejestrowanego w manifeście
+            if filepath in existing_checksums:
+                current_sha = compute_sha256(filepath)
+                if current_sha != existing_checksums[filepath]:
+                    print(f"  [OSTRZEŻENIE] {filepath} różni się od sumy w manifeście! Użyj --force, aby go odtworzyć.")
             print(f"[i] Plik {filepath} już istnieje (użyj --force, aby wygenerować ponownie).")
 
-    print("\n[+] Zapisywanie sum kontrolnych SHA-256 do data/checksums.sha256...")
-    with open(checksum_file, 'w') as f:
-        f.write("# Deterministyczne sumy kontrolne zestawów danych benchmarku (SEED=42)\n")
-        for filepath, _ in files_to_generate:
-            if os.path.exists(filepath):
-                sha = compute_sha256(filepath)
-                f.write(f"{sha}  {filepath}\n")
-                print(f"  {sha[:16]}...  {filepath}")
+    # Zapis manifestu tylko jeśli plik nie istnieje, wymuszono --force lub --update-manifest, lub wygenerowano brakujące pliki
+    if not os.path.exists(checksum_file) or args.force or args.update_manifest or regenerated_any:
+        print("\n[+] Zapisywanie sum kontrolnych SHA-256 do data/checksums.sha256...")
+        with open(checksum_file, 'w') as f:
+            f.write("# Deterministyczne sumy kontrolne zestawów danych benchmarku (SEED=42)\n")
+            for filepath, _ in files_to_generate:
+                if os.path.exists(filepath):
+                    sha = compute_sha256(filepath)
+                    f.write(f"{sha}  {filepath}\n")
+                    print(f"  {sha[:16]}...  {filepath}")
+    else:
+        print(f"\n[i] Manifest {checksum_file} pozostał nienaruszony (brak zmian w plikach).")
 
     print("\n[✓] Wszystkie zestawy danych są gotowe i zweryfikowane.")
     return 0

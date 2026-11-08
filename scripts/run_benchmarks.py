@@ -204,10 +204,13 @@ def evaluate_single_run(executable, dataset_or_iters, args=[]):
     """
     Rygorystyczna ocena pojedynczej próby ataku.
     Rozróżnia:
-      1. Potwierdzoną reakcję ochrony (ZABLOKOWANO)
-      2. Potwierdzony sukces ładunku ataku ([EXPLOIT_SUCCESS] w wyjściu)
-      3. Niepotwierdzoną awarię (Crash bez sygnatury mechanizmu ochrony)
-      4. Poprawne zakończenie bez wykonania ataku (Clean exit)
+      1. Błąd środowiska uruchomieniowego (inicjalizacja HWASan/MTE/glibc) -> TEST NIEWAŻNY
+      2. Wykonanie ładunku ataku ([EXPLOIT_SUCCESS]):
+         - ret == 0: Pełny sukces ataku (OMINIĘTO)
+         - ret != 0: Ładunek wykonany, po czym nastąpiła opóźniona detekcja / awaria
+      3. Zablokowanie przez mechanizmy ochronne (ASan, HWASan, Stack Canary, Fortify, Scudo, MTE, CFI, BTI, PAC)
+      4. Zakończenie z kodem 0 bez ładunku (OMINIĘTO)
+      5. Niepotwierdzona awaria (CRASH/AWARIA bez jednoznacznej sygnatury zabezpieczenia)
     """
     cmd = [f'./build/{executable}']
     if isinstance(dataset_or_iters, str):
@@ -239,7 +242,25 @@ def evaluate_single_run(executable, dataset_or_iters, args=[]):
 
     exploit_success = ("[EXPLOIT_SUCCESS]" in stdout or "[EXPLOIT_SUCCESS]" in stderr)
 
-    # 1. Raport sanitizera ASan / HWASan
+    # 1. Kontrola błędów środowiska (nieudana aktywacja środowiska / runtime)
+    if ret == 1 and ("HWAddressSanitizer: failed to" in stderr or "failed to allocate shadow" in stderr):
+        return False, "BŁĄD ŚRODOWISKA (HWASan: błąd inicjalizacji pamięci cienia)", "Błąd środowiska", sig_name, ret
+
+    if "[!] OSTRZEŻENIE: prctl(PR_SET_TAGGED_ADDR_CTRL) nie powiodło się" in stderr:
+        return False, "BŁĄD ŚRODOWISKA (Błąd aktywacji MTE w prctl)", "Błąd środowiska", sig_name, ret
+
+    if ret == 127:
+        return False, "BŁĄD ŚRODOWISKA (Brak pliku wykonywalnego lub biblioteki, kod 127)", "Błąd środowiska", sig_name, ret
+
+    # 2. Wykrycie wykonania ładunku ataku ([EXPLOIT_SUCCESS])
+    if exploit_success:
+        if ret == 0:
+            return False, "OMINIĘTO (Atak powiódł się - wykonano ładunek)", "Brak", sig_name, ret
+        else:
+            # Ładunek zdołał się wykonać (brak prewencji), ale nastąpiła opóźniona detekcja / crash (np. MTE async)
+            return False, f"OMINIĘTO (Wykonano ładunek, po czym nastąpiła awaria {sig_name}, kod {ret})", "Opóźniona detekcja", sig_name, ret
+
+    # 3. Raport sanitizera ASan / HWASan (wyłącznie gdy proces zakończył się błędem)
     sanitizer_error = "Brak"
     for line in stderr.splitlines():
         san_match = re.search(
@@ -253,54 +274,60 @@ def evaluate_single_run(executable, dataset_or_iters, args=[]):
             sanitizer_error = f"{san_match.group(1)}: {san_match.group(2)}"
             break
 
-    if sanitizer_error != "Brak":
+    if sanitizer_error != "Brak" and ret != 0:
         return True, f"ZABLOKOWANO ({sanitizer_error})", sanitizer_error, sig_name, ret
 
-    if "AddressSanitizer" in stderr or "HWAddressSanitizer" in stderr or (ret == 99 and 'hwasan' in executable):
+    if (("ERROR: AddressSanitizer:" in stderr or "ERROR: HWAddressSanitizer:" in stderr) or (ret == 99 and 'hwasan' in executable)) and ret != 0:
         return True, "ZABLOKOWANO (Sanitizer report)", "Sanitizer Report", sig_name, ret
 
-    # 2. Stack smashing detected (Stack Canary)
-    if "stack smashing detected" in stderr or "__stack_chk_fail" in stderr:
+    # 4. Stack smashing detected (Stack Canary)
+    if ("stack smashing detected" in stderr or "__stack_chk_fail" in stderr) and ret != 0:
         return True, "ZABLOKOWANO (Stack Canary: naruszenie stosu)", "Canary __stack_chk_fail", sig_name, ret
 
-    # 3. Fortify Source: wykrycie przepełnienia bufora
-    if "buffer overflow detected" in stderr:
-        if '_P5_' in executable and not any(k in executable for k in ['asan', 'hwasan', 'fortify', 'cfi_pac_bti_mte_fortify_bounds']):
-            return False, "OMINIĘTO (MTE 16B nie wykrywa sub-granule)", "Brak", sig_name, ret
+    # 5. Fortify Source: wykrycie przepełnienia bufora
+    if "buffer overflow detected" in stderr and ret != 0:
         return True, "ZABLOKOWANO (Fortify Source: naruszenie bufora)", "Fortify Source", sig_name, ret
 
-    # 4. Scudo Memory Allocator
-    if "Scudo ERROR:" in stderr or "Scudo error:" in stderr:
-        if any(tag in executable for tag in ['_P3_', '_P4_', '_P5_', '_M3_']):
-            return False, "AWARIA (Crash alokatora Scudo poza domeną sterty)", "Brak", sig_name, ret
+    # 6. Scudo Memory Allocator
+    if ("Scudo ERROR:" in stderr or "Scudo error:" in stderr) and ret != 0:
         return True, "ZABLOKOWANO (Scudo: naruszenie spójności sterty)", "Scudo Abort", sig_name, ret
 
-    # 5. Sprzętowe MTE (SEGV_MTESERR / SEGV_MTEAERR)
-    is_mte_sync = ("SEGV_MTESERR" in stderr)
-    is_mte_async = ("SEGV_MTEAERR" in stderr)
-    if is_mte_sync:
+    # 7. Sprzętowe MTE (SEGV_MTESERR / SEGV_MTEAERR)
+    # Wykrywamy rzeczywisty trap błędu tagu zgłoszony przez procesor / kernel fault handler,
+    # a NIE tekst powitalny konstruktora [SECURITY_INIT]!
+    is_mte_sync_trap = (
+        (ret in [139, 11, -11]) and (
+            ("[SECURITY_TRAP]" in stderr and "SEGV_MTESERR" in stderr) or
+            ("si_code): 9" in stderr) or
+            ("si_code): SEGV_MTESERR" in stderr) or
+            ("SEGV_MTESERR" in stderr and "[SECURITY_INIT]" not in stderr)
+        )
+    )
+    is_mte_async_trap = (
+        (ret in [139, 11, -11]) and (
+            ("[SECURITY_TRAP]" in stderr and "SEGV_MTEAERR" in stderr) or
+            ("si_code): 8" in stderr) or
+            ("si_code): SEGV_MTEAERR" in stderr) or
+            ("SEGV_MTEAERR" in stderr and "[SECURITY_INIT]" not in stderr)
+        )
+    )
+
+    if is_mte_sync_trap:
         if '_base' in executable or '_lto' in executable:
             return False, f"CRASH (Awaria niechroniona: {sig_name}, kod {ret})", "Brak", sig_name, ret
-        if '_P5_' in executable:
-            return False, "OMINIĘTO (MTE 16B nie wykrywa sub-granule)", "Brak", sig_name, ret
         return True, "ZABLOKOWANO (MTE: synchroniczny błąd tagu SEGV_MTESERR)", "MTE Sync Tag Fault", sig_name, ret
 
-    if is_mte_async:
+    if is_mte_async_trap:
         if '_base' in executable or '_lto' in executable:
             return False, f"CRASH (Awaria niechroniona: {sig_name}, kod {ret})", "Brak", sig_name, ret
-        if '_P5_' in executable:
-            return False, "OMINIĘTO (MTE 16B nie wykrywa sub-granule)", "Brak", sig_name, ret
         return True, "ZABLOKOWANO (MTE: asynchroniczny błąd tagu SEGV_MTEAERR)", "MTE Async Tag Fault", sig_name, ret
 
-    # 6. Sygnały przechwycone przez nasz fault handler ze znacznikiem [SECURITY_TRAP]
+    # 8. Sygnały przechwycone przez nasz fault handler ze znacznikiem [SECURITY_TRAP]
     # lub bezpośrednie sygnały sprzętowe architektury AArch64 (SIGILL=4/132, SIGTRAP=5/133, SIGBUS=7/135)
     is_sec_trap = ("[SECURITY_TRAP]" in stderr) or (sig in [4, 5, 7]) or (ret in [132, 133, 135])
-    if is_sec_trap:
+    if is_sec_trap and ret != 0:
         if '_base' in executable or '_lto' in executable:
             return False, f"CRASH (Awaria niechroniona: {sig_name}, kod {ret})", "Brak", sig_name, ret
-
-        if '_D2_bypass_' in executable:
-            return False, "OMINIĘTO (D2_BYPASS: funkcja o zgodnym typie omija CFI)", "Brak", sig_name, ret
 
         if any(k in executable for k in ['cfi', 'cfi_pac_bti', 'cfi_pac_bti_mte', 'cfi_pac_bti_mte_fortify_bounds']) and any(k in executable for k in ['_D2_', '_D3_', '_D4_']) and (sig in [4, 5] or ret in [132, 133]):
             return True, f"ZABLOKOWANO (CFI: pułapka kompilatora / nielegalny skok {sig_name})", "CFI Trap", sig_name, ret
@@ -311,15 +338,11 @@ def evaluate_single_run(executable, dataset_or_iters, args=[]):
         if any(k in executable for k in ['pac', 'pac_bti', 'cfi_pac_bti', 'cfi_pac_bti_mte', 'cfi_pac_bti_mte_fortify_bounds']) and '_D1_' in executable and (sig in [4, 7, 11] or ret in [132, 135, 139]):
             return True, f"ZABLOKOWANO (PAC: błąd autoryzacji adresu {sig_name})", "PAC Auth Fault", sig_name, ret
 
-    # 7. Wykrycie potwierdzonego sukcesu ataku przez znacznik [EXPLOIT_SUCCESS]
-    if exploit_success:
-        return False, "OMINIĘTO (Atak powiódł się - wykonano ładunek)", "Brak", sig_name, ret
-
-    # 8. Czyste wyjście z kodem 0 bez ładunku
+    # 9. Czyste wyjście z kodem 0 (brak ładunku i brak błędu)
     if ret == 0:
         return False, "OMINIĘTO (Zakończono poprawnie bez wykrycia, kod 0)", "Brak", "Brak", 0
 
-    # 9. Niepotwierdzona awaria (Crash bez jednoznacznego sygnału ochrony)
+    # 10. Niepotwierdzona awaria (Crash bez jednoznacznego sygnału ochrony)
     return False, f"AWARIA (Crash niepotwierdzony: {sig_name}, kod {ret})", "Brak", sig_name, ret
 
 
@@ -330,15 +353,25 @@ def run_efficacy_test(executable, dataset_or_iters, trials=5, args=[]):
     last_sig = "Brak"
     last_ret = 0
 
-    for _ in range(trials):
-        blocked, status, san, sig, ret = evaluate_single_run(executable, dataset_or_iters, args)
-        if blocked:
-            blocked_count += 1
-        statuses.append(status)
-        if san != "Brak":
-            last_sanitizer = san
-        last_sig = sig
-        last_ret = ret
+    log_file = "benchmark_trials_log.csv"
+    log_exists = os.path.exists(log_file)
+    with open(log_file, "a", encoding="utf-8") as f_log:
+        if not log_exists:
+            f_log.write("timestamp,executable,trial_idx,blocked,status,sanitizer,signal,returncode\n")
+
+        for trial_idx in range(trials):
+            blocked, status, san, sig, ret = evaluate_single_run(executable, dataset_or_iters, args)
+            if blocked:
+                blocked_count += 1
+            statuses.append(status)
+            if san != "Brak":
+                last_sanitizer = san
+            last_sig = sig
+            last_ret = ret
+
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            clean_status = status.replace('"', '""')
+            f_log.write(f'"{ts}","{executable}",{trial_idx + 1},{int(blocked)},"{clean_status}","{san}","{sig}",{ret}\n')
 
     eff_percent = (blocked_count / trials) * 100.0
     common_status = max(set(statuses), key=statuses.count)
@@ -484,13 +517,23 @@ if __name__ == "__main__":
     print(f"   Dataset: {dataset_perf} | Rozgrzewka: {warmup_count} | Shuffle: {args.shuffle}")
     print("=" * 75)
 
-    # Zapis metadanych środowiska
-    env_meta = gather_environment_metadata()
-    env_meta['profile'] = args.profile
-    env_meta['runs_count'] = runs_count
-    env_meta['trials_count'] = trials_count
-    with open("benchmark_environment.json", "w") as f:
-        json.dump(env_meta, f, indent=2)
+    # Zapis metadanych środowiska (wyłącznie przy rzeczywistym wykonaniu testów)
+    if not plots_only:
+        env_meta = gather_environment_metadata()
+        env_meta['profile'] = args.profile
+        env_meta['runs_count'] = runs_count
+        env_meta['trials_count'] = trials_count
+        with open("benchmark_environment.json", "w") as f:
+            json.dump(env_meta, f, indent=2)
+    else:
+        if os.path.exists("benchmark_environment.json"):
+            print("  [INFO] Tryb --plots-only: zachowano oryginalny plik benchmark_environment.json.")
+            try:
+                with open("benchmark_environment.json", "r") as f:
+                    old_meta = json.load(f)
+                    print(f"  [INFO] Pochodzenie danych z benchmark_environment.json: platforma={old_meta.get('platform')}, timestamp={old_meta.get('timestamp')}")
+            except Exception:
+                pass
 
     perf_apps = {
         'Parser': ([
@@ -754,15 +797,21 @@ if __name__ == "__main__":
         for app_group, (executables, arg) in perf_apps.items():
             print(f"\n[+] Testowanie grupy: {app_group}")
             exec_list = list(executables)
-            if args.shuffle:
-                np.random.shuffle(exec_list)
 
+            # Rozgrzewka (Warmup) dla każdego wariantu
+            print(f"  Faza rozgrzewki ({warmup_count} przebiegów)...")
             for exe in exec_list:
-                print(f"  Uruchamianie {exe} ({runs_count} iteracji, {warmup_count} rozgrzewki)...")
                 for _ in range(warmup_count):
                     run_performance_test(exe, arg)
 
-                for iter_idx in range(runs_count):
+            # Pomiar z losowaniem blokowym (Randomized Complete Block Design - RCBD)
+            print(f"  Faza pomiarowa ({runs_count} iteracji, Randomized Block Design: {args.shuffle})...")
+            for iter_idx in range(runs_count):
+                block_execs = list(exec_list)
+                if args.shuffle:
+                    np.random.shuffle(block_execs)
+
+                for exe in block_execs:
                     res = run_performance_test(exe, arg)
                     if res.get('Error'):
                         print(f"    [BŁĄD] Wariant {exe} zakończył się błędem: {res.get('Stderr')}")
@@ -782,9 +831,11 @@ if __name__ == "__main__":
         for app_group in df_raw['Grupa'].unique():
             grp_data = df_raw[df_raw['Grupa'] == app_group]
             base_run = grp_data[grp_data['Wariant'].str.endswith('_base')]
+            lto_run = grp_data[grp_data['Wariant'].str.endswith('_lto')]
             base_time = base_run['Czas Wewnętrzny (s)'].median() if not base_run.empty else 1.0
             base_proc = base_run['Czas Przetwarzania (s)'].median() if not base_run.empty else 1.0
             base_ram = base_run['RAM (KB)'].median() if not base_run.empty else 1.0
+            lto_time = lto_run['Czas Wewnętrzny (s)'].median() if not lto_run.empty else None
 
             for var in grp_data['Wariant'].unique():
                 var_data = grp_data[grp_data['Wariant'] == var]
@@ -801,6 +852,12 @@ if __name__ == "__main__":
                     iqr_time = 0.0
                 time_overhead_pct = ((med_time - base_time) / base_time) * 100.0 if base_time else 0.0
                 proc_overhead_pct = ((med_proc - base_proc) / base_proc) * 100.0 if base_proc else 0.0
+
+                # Obliczenie narzutu względem LTO (dla precyzyjnego wyizolowania kosztu CFI):
+                if lto_time is not None and lto_time > 0 and any(k in var for k in ['cfi', 'lto']):
+                    lto_overhead_pct = round(((med_time - lto_time) / lto_time) * 100.0, 2)
+                else:
+                    lto_overhead_pct = 'N/A'
 
                 med_ram = var_data['RAM (KB)'].median()
                 ram_overhead_pct = ((med_ram - base_ram) / base_ram) * 100.0 if base_ram else 0.0
@@ -824,6 +881,7 @@ if __name__ == "__main__":
                     'Odch. std. czasu (s)': round(std_time, 6),
                     'IQR czasu (s)': round(iqr_time, 6),
                     'Narzut czasowy (%)': round(time_overhead_pct, 2),
+                    'Narzut vs LTO (%)': lto_overhead_pct,
                     'Mediana RAM (KB)': int(med_ram),
                     'Narzut RAM (%)': round(ram_overhead_pct, 2),
                     'Rozmiar .text (B)': text_size or 0,
@@ -1306,7 +1364,8 @@ if __name__ == "__main__":
                 r_m = max(1.0, float(row['Mediana RAM (KB)']) / max(m_base, 1.0))
                 r_s = max(1.0, float(row.get('Rozmiar .text (B)', s_base)) / max(s_base, 1.0))
 
-                c_cloud = 0.70 * r_t + 0.25 * (r_t * r_m) + 0.05 * r_s
+                # Koszt infrastrukturalny oparty na rozliczeniu czasu CPU (vCPU) i iloczynu pamięci (GB-s):
+                c_cloud = 0.75 * r_t + 0.25 * (r_t * r_m)
                 cost_records.append({
                     'Grupa': grp,
                     'Mechanizm': mech,
@@ -1320,8 +1379,8 @@ if __name__ == "__main__":
         df_costs = pd.DataFrame(cost_records)
 
         # Ujednolicone i symetryczne uśrednianie kosztu C_cloud:
-        # Sanitizery/alokatory pamięciowe (asan, hwasan, scudo, mte_sync, mte_async)
-        # porównujemy sprawiedliwie na aplikacjach obciążających stertę (Parser i KV_Store).
+        # Mechanizmy pamięciowe (asan, hwasan, scudo, mte_sync, mte_async)
+        # porównujemy na aplikacjach obciążających stertę (Parser i KV_Store).
         mem_mechs = ['asan', 'hwasan', 'scudo', 'mte_sync', 'mte_async']
         df_costs_sym = df_costs[
             (~df_costs['Mechanizm'].isin(mem_mechs)) |
@@ -1405,10 +1464,45 @@ if __name__ == "__main__":
 
         df_meth = pd.DataFrame(methodology_rows)
         df_meth.to_csv("benchmark_methodology_scores.csv", index=False)
-        # Zapisujemy również ujednolicony benchmark_cost_efficiency.csv z tymi samymi definicjami:
         df_meth.to_csv("benchmark_cost_efficiency.csv", index=False)
         print(df_meth.to_string(index=False))
-        print("\n  -> Zapisano spójne wyniki do benchmark_methodology_scores.csv i benchmark_cost_efficiency.csv")
+        print("\n  -> Zapisano wyniki do benchmark_methodology_scores.csv i benchmark_cost_efficiency.csv")
+
+        # ------------------------------------------------------------------
+        # ANALIZA WRAŻLIWOŚCI (SENSITIVITY ANALYSIS)
+        # ------------------------------------------------------------------
+        sens_records = []
+        weight_configs = [
+            ("Zrównoważony (50/50)", 0.50, 0.50),
+            ("Domyślny (75/25)",      0.75, 0.25),
+            ("Dominacja CPU (90/10)",  0.90, 0.10)
+        ]
+        for cfg_name, w_t, w_m in weight_configs:
+            for _, r in df_meth.iterrows():
+                mech = r['Mechanizm']
+                c_row = avg_costs[avg_costs['Mechanizm'] == mech]
+                if c_row.empty:
+                    continue
+                rt = float(c_row['r_T'].iloc[0])
+                rm = float(c_row['r_M'].iloc[0])
+                c_custom = w_t * rt + w_m * (rt * rm)
+                s_prod = float(r['S_sys_prod (%)']) / 100.0
+
+                pps_lin = (s_prod / max(c_custom, 1e-6)) * 100.0
+                pps_quad = ((s_prod ** 2) / max(c_custom, 1e-6)) * 100.0
+
+                sens_records.append({
+                    'Konfiguracja': cfg_name,
+                    'Waga_CPU': w_t,
+                    'Waga_RAM': w_m,
+                    'Mechanizm': mech,
+                    'C_cloud': round(c_custom, 3),
+                    'PPS_Liniowy': round(pps_lin, 1),
+                    'PPS_Kwadratowy': round(pps_quad, 1),
+                })
+        df_sens = pd.DataFrame(sens_records)
+        df_sens.to_csv("benchmark_sensitivity_analysis.csv", index=False)
+        print("\n  -> Zapisano analizę wrażliwości do benchmark_sensitivity_analysis.csv")
 
         # Generowanie wykresów FTS vs PPS oraz Frontu Pareto
         df_plot = df_meth[df_meth['C_cloud (mnoznik)'] != 'N/A'].copy()
@@ -1430,7 +1524,7 @@ if __name__ == "__main__":
 
             df_plot_pps = df_plot.sort_values('PPS_System (pkt)', ascending=True)
             ax2.barh(df_plot_pps['Mechanizm'], df_plot_pps['PPS_System (pkt)'], color='#2ecc71')
-            ax2.set_title('PPS_System (Production Protection Score)\nOpłacalność produkcyjna (3 klasy ataków)', fontsize=11, fontweight='bold')
+            ax2.set_title('PPS_System (Production Protection Score)\nEfektywność w profilu produkcyjnym (3 klasy ataków)', fontsize=11, fontweight='bold')
             ax2.set_xlabel('Wskaźnik PPS_System (pkt)', fontsize=10)
             for i, v in enumerate(df_plot_pps['PPS_System (pkt)']):
                 ax2.text(v + 1, i, f"{v:.1f}", va='center', fontweight='bold', fontsize=9)
@@ -1468,13 +1562,15 @@ if __name__ == "__main__":
         ("benchmark_environment.json",         "Metadane środowiska i kompilatora"),
         ("benchmark_binary_size.csv",          "Rozmiary binarek i sekcji .text"),
         ("benchmark_performance_data.csv",     "Surowe dane wydajnościowe (wszystkie iteracje)"),
-        ("benchmark_summary.csv",              "Podsumowanie statystyczne wydajności"),
-        ("benchmark_efficacy_data.csv",        "Surowe wyniki prób skuteczności ataków"),
+        ("benchmark_summary.csv",              "Podsumowanie statystyczne wydajności (z narzutem vs LTO)"),
+        ("benchmark_trials_log.csv",           "Audytowalny log każdej pojedynczej próby ataku"),
+        ("benchmark_efficacy_data.csv",        "Zbiorcze wyniki prób skuteczności ataków"),
         ("benchmark_efficacy_matrix.csv",      "Macierz skuteczności (mechanizm × atak)"),
         ("benchmark_efficacy_per_mechanism.csv","Rzeczywista skuteczność per mechanizm z 95% CI"),
         ("benchmark_efficacy_per_class.csv",   "Skuteczność per klasa ataku"),
-        ("benchmark_methodology_scores.csv",   "Autorska punktacja i koszt (FTS, PPS, C_cloud)"),
+        ("benchmark_methodology_scores.csv",   "Punktacja i koszt heurystyczny (FTS, PPS, C_cloud)"),
         ("benchmark_cost_efficiency.csv",      "Ujednolicona efektywność kosztowa i ranking"),
+        ("benchmark_sensitivity_analysis.csv", "Analiza wrażliwości wag modelu kosztu i metryk"),
     ]
     for fname, desc in expected_files:
         marker = "✓" if os.path.exists(fname) else "✗"

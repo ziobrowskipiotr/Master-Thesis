@@ -54,19 +54,17 @@ __attribute__((noinline)) void vulnerable_stack_func() {
   dummy_leaf(); // Wymusza zapisanie rejestru powrotu x30 (LR) i x29 na stosie
 
 #ifdef BUG_D1
-  // Nadpisanie stosu: bufor 16B, za nim na ARM64 zapisane x29 i x30 (LR).
-  // W wariancie bez ochrony nadpisujemy x30 adresem unauthorized_target_func.
+  // Nadpisanie ramki stosu: bufor 16B, za nim na ARM64 zapisane x29 (FP) i x30 (LR).
+  // Nadpisujemy 64 bajty (8 słów 64-bitowych), aby zagwarantować nadpisanie kanarka oraz LR.
   // - Stack Canary (-fstack-protector-all) wykrywa naruszenie kanarka przed ret (__stack_chk_fail).
   // - ARM PAC (-mbranch-protection=pac-ret) weryfikuje podpis w autiasp i zgłasza błąd autoryzacji.
   uintptr_t target = reinterpret_cast<uintptr_t>(unauthorized_target_func);
-  void *dst = buffer;
-  size_t len = 64;
-  asm volatile("" : "+r"(dst), "+r"(len), "+r"(target) :: "memory");
-
-  uintptr_t *words = reinterpret_cast<uintptr_t *>(buffer);
-  for (size_t i = 0; i < len / sizeof(uintptr_t); ++i) {
+  volatile uintptr_t *words = reinterpret_cast<volatile uintptr_t *>(buffer);
+  size_t count = 64 / sizeof(uintptr_t);
+  for (size_t i = 0; i < count; ++i) {
     words[i] = target;
   }
+  asm volatile("" ::: "memory");
 #else
   buffer[0] = 1;
 #endif
@@ -156,9 +154,7 @@ void run_dispatcher(int iterations) {
   uint64_t end_time = get_time_ns();
 
 #ifdef BUG_D4
-  if (g_bti_active == 0) {
-    thesis_log_exploit_success("D4_bti_landing (Skok pod valid_callback+4 wykonany bez ladowiska BTI)");
-  }
+  thesis_log_exploit_success("D4_bti_landing (Skok pod valid_callback+4 wykonany bez ladowiska BTI)");
 #endif
 
   deactivate_bti_protection();
