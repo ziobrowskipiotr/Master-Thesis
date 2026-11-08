@@ -34,58 +34,92 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         }
         
 #ifdef BUG_P1
-        memcpy(heap_buffer, input_buffer + offset, length + 8); 
+        // Atak P1: Heap buffer overflow - alokacja `length`, zapis `length + 8`
+        memcpy(heap_buffer, input_buffer + offset, length + 8);
+        __asm__ __volatile__("" : "+m"(*heap_buffer) :: "memory");
+        (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
+        thesis_log_exploit_success("P1_heap_overflow (Przepełnienie bufora sterty wykonane pomyślnie)");
+#elif defined(BUG_P4)
+        size_t safe_copy = (offset + length <= size) ? length : (size - offset);
+        memcpy(heap_buffer, input_buffer + offset, safe_copy);
 #else
         memcpy(heap_buffer, input_buffer + offset, length);
 #endif
 
 #ifdef BUG_P2
-        // Nadpisujemy bufor na stosie o 48 bajtów poza deklarowany rozmiar 16B (zapis 64B).
-        // Canary wykrywa rozbicie kanarka stosu, MTE wykrywa naruszenie tagu stosu,
-        // a ASan/HWASan/Fortify natychmiastowe przekroczenie bufora.
-        memcpy(stack_buffer, input_buffer + offset, (size_t)length + 48);
+        // Atak P2: Stack buffer overflow (zapis 64B do bufora 16B na stosie)
+        // Pojedyncza, czysta operacja wyzwalająca kanarka stosu, MTE-stack, Fortify lub ASan:
+        size_t p2_len = (size_t)length + 48;
+        memcpy(stack_buffer, input_buffer + offset, p2_len);
         __asm__ __volatile__("" : "+m"(stack_buffer) :: "memory");
-        volatile uint8_t leak_p2 = stack_buffer[0];
-        (void)leak_p2;
+        (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
+        thesis_log_exploit_success("P2_stack_overflow (Przepełnienie bufora stosu wykonane pomyślnie)");
 #else
         stack_buffer[0] = type;
 #endif
 
 #ifdef BUG_P3
-        memcpy(global_buffer, input_buffer + offset, length + 32);
+        // Atak P3: Global buffer overflow (zapis 48B do bufora sekcji globalnej 16B)
+        size_t glob_len = (size_t)length + 32;
+        memcpy(global_buffer, input_buffer + offset, glob_len);
+        __asm__ __volatile__("" : "+m"(global_buffer) :: "memory");
+        (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
+        thesis_log_exploit_success("P3_global_overflow (Przepełnienie bufora globalnego wykonane pomyślnie)");
+#endif
+
+#ifdef BUG_P4
+        // Atak P4: Out-of-bounds heap read
+        if (offset + length > size) {
+            volatile uint8_t leak = input_buffer[offset + length];
+            (void)leak;
+            (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
+            thesis_log_exploit_success("P4_heap_oob_read (Odczyt poza stertą wykonany pomyślnie)");
+            free(heap_buffer);
+            break;
+        }
 #endif
 
 #ifdef BUG_P5
-        // Atak P5: Sub-granule Overflow (alokacja 8B, nadpisanie 4B wewnątrz tego samego 16B kafelka).
+        // Atak P5: Sub-granule Overflow (alokacja 8B, zapis 12B wewnątrz tego samego 16B kafelka).
         // Sprzętowe MTE przydziela tagi co 16B, więc bajty 8..11 mają ten sam tag -> MTE ma 0% detekcji!
         // ASan (1B shadow) oraz HWASan (short-granule tag) wykrywają to w 100%!
-        uint8_t* sub_buffer = (uint8_t*)malloc(8);
+        size_t alloc_sz = 8;
+        size_t copy_sz = 12;
+        __asm__ __volatile__("" : "+r"(alloc_sz), "+r"(copy_sz) :: "memory");
+        uint8_t* sub_buffer = (uint8_t*)malloc(alloc_sz);
         if (sub_buffer != NULL) {
-            memcpy(sub_buffer, input_buffer + offset, 12);
-            __asm__ __volatile__("" : "+m"(*(uint8_t(*)[12])sub_buffer) :: "memory");
+            memcpy(sub_buffer, input_buffer + offset, copy_sz);
+            __asm__ __volatile__("" : "+r"(sub_buffer) :: "memory");
             volatile uint8_t leak_p5 = sub_buffer[11];
             (void)leak_p5;
             free(sub_buffer);
+            thesis_log_exploit_success("P5_subgranule_overflow (Zapis wewnątrz 16B kafelka MTE wykonany bez wykrycia)");
         }
 #endif
 
 #ifdef BUG_P6
         // Atak P6: Data-Oriented Programming (DOP) na stosie.
-        // Dwie niezależne zmienne na stosie: `user[16]` oraz flaga `is_admin = 0`.
-        // Nadpisujemy bufor `user` poza jego deklarowany rozmiar 16B (zapis 24B).
-        // Canary, PAC, BTI, CFI = 0% detekcji! MTE-stack, ASan i HWASan = wykrycie!
-        int is_admin = 0;
-        char user[16] = {0};
-        __asm__ __volatile__("" : "+m"(user), "+m"(is_admin) :: "memory");
+        // Używamy struktury o gwarantowanym standardem C układzie pól:
+        // user_buffer (16B) bezpośrednio poprzedza is_admin (4B).
+        // Nadpisanie nie dotyka wskaźnika ramki ani kanarka stosu!
+        struct {
+            char user_buffer[16];
+            volatile uint32_t is_admin;
+        } dop_frame;
+        memset(dop_frame.user_buffer, 0, sizeof(dop_frame.user_buffer));
+        dop_frame.is_admin = 0;
 
-        memcpy(user, input_buffer + offset, 24);
-        __asm__ __volatile__("" : "+m"(user), "+m"(is_admin) :: "memory");
+        uint32_t admin_val = 0x1337BEEF;
+        char payload[20];
+        memset(payload, 'A', 16);
+        memcpy(payload + 16, &admin_val, 4);
 
-        volatile uint8_t leak_p6 = (volatile uint8_t)user[20];
-        (void)leak_p6;
+        memcpy(dop_frame.user_buffer, payload, 20);
+        __asm__ __volatile__("" : "+m"(dop_frame) :: "memory");
+        (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
 
-        if (is_admin != 0) {
-            fprintf(stderr, "[!] DOP Sukces: Flaga is_admin nadpisana na %d bez dotykania wskaźników kodu!\n", is_admin);
+        if (dop_frame.is_admin == 0x1337BEEF) {
+            thesis_log_exploit_success("P6_stack_dop (Flaga is_admin zmodyfikowana na 0x1337BEEF)");
         }
 #endif
 
@@ -102,6 +136,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         offset += length;
     }
     
+    (void)getpid(); // Punkt synchronizacji jądra dla MTE_ASYNC (TFSRE0_EL1)
     uint64_t end_time = get_time_ns();
     printf("Czas_Parsowania_ns:%llu\n", (unsigned long long)(end_time - start_time));
 }
@@ -141,8 +176,6 @@ int main(int argc, char* argv[]) {
 
     // Kopiujemy dane na heap, zeby sanitizery (ASan/HWASan/MTE) mogly
     // wykryc odczyty poza buforem (P4) i przepelnienia (P1).
-    // mmap-owany region jest chroniony przez kernel (SIGSEGV na granicy strony),
-    // co maskowaloby bledy przed sanitizerami.
     uint8_t* heap_input = (uint8_t*)malloc(sb.st_size);
     if (heap_input == NULL) {
         perror("Blad alokacji pamieci dla kopii danych");

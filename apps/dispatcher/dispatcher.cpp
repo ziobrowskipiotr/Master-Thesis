@@ -7,21 +7,26 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-#ifndef PROT_BTI
-#define PROT_BTI 0x10
-#endif
-
 using CallbackFn = void (*)();
+
+[[maybe_unused]] static int g_bti_active = 0;
+
+__attribute__((noinline)) void unauthorized_target_func() {
+  thesis_log_exploit_success("D1_stack_smash (Przejęcie adresu powrotu LR i wykonanie unauthorized_target_func)");
+  _exit(0);
+}
 
 __attribute__((noinline)) void valid_callback() {
   [[maybe_unused]] volatile int a = 1;
 }
 
 __attribute__((noinline)) void malicious_callback_diff_type(int x, double y) {
+  thesis_log_exploit_success("D2_indirect_call_hijack (Wykonanie nieautoryzowanej funkcji o niezgodnej sygnaturze)");
   [[maybe_unused]] volatile int b = 2 + x + (int)y;
 }
 
 __attribute__((noinline)) void malicious_callback_same_type() {
+  thesis_log_exploit_success("D2_bypass_cfi (Obejsice CFI: wykonanie funkcji o zgodnej sygnaturze typu)");
   [[maybe_unused]] volatile int b = 666;
 }
 
@@ -31,62 +36,42 @@ public:
   virtual ~EventHandler() = default;
 };
 
-[[maybe_unused]] static class UnrelatedMalicious {
+class UnrelatedMalicious {
 public:
   virtual void __attribute__((noinline)) fake_handle() {
+    thesis_log_exploit_success("D3_vtable_hijack (Wykonanie fake_handle przez podmieniona tablice vtable)");
     [[maybe_unused]] volatile int d = 4;
   }
-} malicious_instance;
+  virtual ~UnrelatedMalicious() = default;
+};
 
-void safe_print_hex(const char *prefix, unsigned long long val) {
-  write(STDERR_FILENO, prefix, strlen(prefix));
-  char buf[18];
-  buf[0] = '0';
-  buf[1] = 'x';
-  int i = 17;
-  for (int j = 0; j < 16; ++j) {
-    int nibble = val & 0xF;
-    buf[i--] = (nibble < 10) ? ('0' + nibble) : ('a' + (nibble - 10));
-    val >>= 4;
-  }
-  write(STDERR_FILENO, buf, 18);
-  write(STDERR_FILENO, "\n", 1);
-}
-
-void fault_handler(int sig, siginfo_t *si, void *vcontext) {
-  ucontext_t *context = (ucontext_t *)vcontext;
-  unsigned long long pc = 0;
-#ifdef __aarch64__
-  pc = context->uc_mcontext.pc;
-#elif defined(__x86_64__)
-  pc = context->uc_mcontext.gregs[REG_RIP];
-#endif
-
-  const char *msg = "[!] Przechwycono sygnal naruszenia bezpieczenstwa.\n";
-  write(STDERR_FILENO, msg, strlen(msg));
-  safe_print_hex("[!] Adres bledu: ", (unsigned long long)si->si_addr);
-  safe_print_hex("[!] PC: ", pc);
-
-  _exit(128 + sig);
-}
+[[maybe_unused]] static UnrelatedMalicious malicious_instance;
 
 __attribute__((noinline)) void dummy_leaf() { asm volatile("" ::: "memory"); }
 
 __attribute__((noinline)) void vulnerable_stack_func() {
   char buffer[16];
   dummy_leaf(); // Wymusza zapisanie rejestru powrotu x30 (LR) i x29 na stosie
+
 #ifdef BUG_D1
+  // Nadpisanie stosu: bufor 16B, za nim na ARM64 zapisane x29 i x30 (LR).
+  // W wariancie bez ochrony nadpisujemy x30 adresem unauthorized_target_func.
+  // - Stack Canary (-fstack-protector-all) wykrywa naruszenie kanarka przed ret (__stack_chk_fail).
+  // - ARM PAC (-mbranch-protection=pac-ret) weryfikuje podpis w autiasp i zgłasza błąd autoryzacji.
+  uintptr_t target = reinterpret_cast<uintptr_t>(unauthorized_target_func);
   void *dst = buffer;
   size_t len = 64;
-  asm volatile("" : "+r"(dst), "+r"(len) :: "memory");
-  std::memset(dst, 0xAA, len);
+  asm volatile("" : "+r"(dst), "+r"(len), "+r"(target) :: "memory");
+
+  uintptr_t *words = reinterpret_cast<uintptr_t *>(buffer);
+  for (size_t i = 0; i < len / sizeof(uintptr_t); ++i) {
+    words[i] = target;
+  }
 #else
   buffer[0] = 1;
 #endif
 }
 
-// Deklaracja wyprzedzająca – potrzebna do obliczenia zakresu stron kodu w
-// mprotect
 void run_dispatcher(int iterations);
 
 static void activate_bti_protection(void) {
@@ -102,7 +87,14 @@ static void activate_bti_protection(void) {
   if (page_size > 0) {
     uintptr_t page_start = start_addr & ~(page_size - 1);
     size_t len = ((end_addr + page_size) & ~(page_size - 1)) - page_start;
-    mprotect((void *)page_start, len, PROT_READ | PROT_EXEC | PROT_BTI);
+    int mres = mprotect((void *)page_start, len, PROT_READ | PROT_EXEC | PROT_BTI);
+    if (mres == 0) {
+      g_bti_active = 1;
+      thesis_safe_write("[SECURITY_INIT] Pomyślnie nadano uprawnienie PROT_BTI dla stron kodu\n");
+    } else {
+      thesis_safe_write("[!] OSTRZEŻENIE: mprotect(PROT_BTI) zwróciło błąd: ");
+      thesis_safe_write_int("", errno);
+    }
   }
 #endif
 }
@@ -163,6 +155,12 @@ void run_dispatcher(int iterations) {
   }
   uint64_t end_time = get_time_ns();
 
+#ifdef BUG_D4
+  if (g_bti_active == 0) {
+    thesis_log_exploit_success("D4_bti_landing (Skok pod valid_callback+4 wykonany bez ladowiska BTI)");
+  }
+#endif
+
   deactivate_bti_protection();
 
   std::cout << "Czas_wykonania_ns:" << (end_time - start_time) << "\n";
@@ -170,16 +168,6 @@ void run_dispatcher(int iterations) {
 }
 
 int main(int argc, char **argv) {
-  struct sigaction sa = {};
-  sa.sa_flags = SA_SIGINFO;
-  sa.sa_sigaction = fault_handler;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGSEGV, &sa, NULL);
-  sigaction(SIGILL, &sa, NULL);
-  sigaction(SIGTRAP, &sa, NULL);
-  sigaction(SIGABRT, &sa, NULL);
-  sigaction(SIGBUS, &sa, NULL);
-
   int iter = (argc > 1) ? std::atoi(argv[1]) : 1;
   run_dispatcher(iter);
   return 0;

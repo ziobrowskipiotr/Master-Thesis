@@ -12,8 +12,10 @@ scripts/vm/vm_data/
 __pycache__/
 *.pyc
 *.bin
+*.sha256
 *.csv
 *.png
+benchmark_*.json
 zadanie.md
 *.pdf
 *.html

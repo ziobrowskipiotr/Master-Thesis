@@ -9,18 +9,6 @@ struct Record {
   char *data;
 };
 
-#ifdef BUG_M3
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wreturn-stack-address"
-__attribute__((noinline)) static char *get_scope_stack_ptr() {
-  char tmp[32] = {0};
-  char *p = tmp;
-  asm volatile("" : "+r"(p) :: "memory");
-  return p;
-}
-#pragma GCC diagnostic pop
-#endif
-
 void process_kv_workload(int num_records, int access_iterations) {
 
   Record **store = (Record **)std::malloc(num_records * sizeof(Record *));
@@ -53,21 +41,36 @@ void process_kv_workload(int num_records, int access_iterations) {
 
 #ifdef BUG_M1
   std::strcpy(target->data, "Malicious write");
+  asm volatile("" : "+m"(*target->data) :: "memory");
+  (void)getpid();
+  thesis_log_exploit_success("M1_use_after_free (Zapis do zwolnionej pamięci sterty wykonany bez wykrycia)");
 #endif
 
 #ifdef BUG_M2
   std::free(target->data);
+  (void)getpid();
+  thesis_log_exploit_success("M2_double_free (Podwójne zwolnienie pamięci sterty wykonane bez wykrycia)");
 #endif
 
 #ifdef BUG_M3
-  // Atak M3: Stack Use-After-Scope / Return (temporalny błąd stosu).
-  // Wskaźnik wskazuje na tablicę wewnątrz zakończonego zakresu (ramki funkcji),
-  // do której następuje zapis po powrocie.
-  // Canary, PAC, Scudo nie wykrywają błędu (0%).
-  // MTE-stack (-fsanitize=memtag-stack), HWASan i ASan wykrywają naruszenie w 100%.
-  char *stack_uaf_ptr = get_scope_stack_ptr();
-  stack_uaf_ptr[0] = 'X';
-  asm volatile("" : "+m"(stack_uaf_ptr[0]) :: "memory");
+  // Prawdziwy Stack Use-After-Scope wewnątrz funkcji:
+  // Wyjście z pierwszego bloku emituje @llvm.lifetime.end (ASan zatruwa slot wartością 0xf8,
+  // a MTE/HWASan zmienia tag przy alokacji zmiennej w kolejnym zasięgu).
+  char *stack_uaf_ptr = nullptr;
+  {
+    char scope_buf[32] = {0};
+    stack_uaf_ptr = scope_buf;
+    asm volatile("" : "+r"(stack_uaf_ptr), "+m"(scope_buf) :: "memory");
+  }
+  {
+    char reused_scope_buf[32] = {1};
+    char *reused_ptr = reused_scope_buf;
+    asm volatile("" : "+r"(reused_ptr), "+m"(reused_scope_buf) :: "memory");
+    stack_uaf_ptr[0] = 'X';
+    asm volatile("" : "+m"(stack_uaf_ptr[0]), "+m"(reused_scope_buf) :: "memory");
+  }
+  (void)getpid(); // Punkt synchronizacji jądra dla MTE_ASYNC (TFSRE0_EL1)
+  thesis_log_exploit_success("M3_stack_use_after_scope (Zapis do zmiennej stosowej poza zakresem wykonany bez wykrycia)");
 #endif
 
   uint64_t t3 = get_time_ns();
@@ -82,6 +85,7 @@ void process_kv_workload(int num_records, int access_iterations) {
   std::free(store);
   uint64_t t4 = get_time_ns();
 
+  (void)getpid(); // Punkt synchronizacji jądra dla MTE_ASYNC (TFSRE0_EL1)
   std::printf("Czas_Alokacji_ns:%llu\n", (unsigned long long)(t1 - t0));
   std::printf("Czas_Przetwarzania_ns:%llu\n", (unsigned long long)(t2 - t1));
   std::printf("Czas_Sprzatania_ns:%llu\n", (unsigned long long)(t4 - t3));
