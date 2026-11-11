@@ -35,6 +35,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         
 #ifdef BUG_P1
         // Atak P1: Heap buffer overflow - alokacja `length`, zapis `length + 8`
+        thesis_log_attack_trigger("P1_heap_overflow");
         memcpy(heap_buffer, input_buffer + offset, length + 8);
         __asm__ __volatile__("" : "+m"(*heap_buffer) :: "memory");
         (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
@@ -50,6 +51,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         // Atak P2: Stack buffer overflow (zapis 64B do bufora 16B na stosie)
         // Pojedyncza, czysta operacja wyzwalająca kanarka stosu, MTE-stack, Fortify lub ASan:
         size_t p2_len = (size_t)length + 48;
+        thesis_log_attack_trigger("P2_stack_overflow");
         memcpy(stack_buffer, input_buffer + offset, p2_len);
         __asm__ __volatile__("" : "+m"(stack_buffer) :: "memory");
         (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
@@ -61,6 +63,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
 #ifdef BUG_P3
         // Atak P3: Global buffer overflow (zapis 48B do bufora sekcji globalnej 16B)
         size_t glob_len = (size_t)length + 32;
+        thesis_log_attack_trigger("P3_global_overflow");
         memcpy(global_buffer, input_buffer + offset, glob_len);
         __asm__ __volatile__("" : "+m"(global_buffer) :: "memory");
         (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
@@ -70,6 +73,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
 #ifdef BUG_P4
         // Atak P4: Out-of-bounds heap read
         if (offset + length > size) {
+            thesis_log_attack_trigger("P4_heap_oob_read");
             volatile uint8_t leak = input_buffer[offset + length];
             (void)leak;
             (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC
@@ -88,6 +92,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         __asm__ __volatile__("" : "+r"(alloc_sz), "+r"(copy_sz) :: "memory");
         uint8_t* sub_buffer = (uint8_t*)malloc(alloc_sz);
         if (sub_buffer != NULL) {
+            thesis_log_attack_trigger("P5_subgranule_overflow");
             memcpy(sub_buffer, input_buffer + offset, copy_sz);
             __asm__ __volatile__("" : "+r"(sub_buffer) :: "memory");
             volatile uint8_t leak_p5 = sub_buffer[11];
@@ -114,6 +119,7 @@ __attribute__((noinline)) void parse_records(const uint8_t* input_buffer, size_t
         memset(payload, 'A', 16);
         memcpy(payload + 16, &admin_val, 4);
 
+        thesis_log_attack_trigger("P6_stack_dop");
         memcpy(dop_frame.user_buffer, payload, 20);
         __asm__ __volatile__("" : "+m"(dop_frame) :: "memory");
         (void)getpid(); // Punkt synchronizacji dla MTE_ASYNC

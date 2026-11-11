@@ -1,111 +1,151 @@
-# Ocena wpływu mechanizmów bezpieczeństwa pamięci na wydajność w ARM64
+# ARM64 — poprawki środowiska badawczego
 
-Środowisko badawcze i autorska metodyka oceny kompromisu między poziomem bezpieczeństwa a narzutem wydajnościowym i chmurowym dla aplikacji niskopoziomowych w architekturze **AArch64 (ARMv8.5-A+)**.
+Wersja przygotowana na podstawie ostatnich załączonych źródeł: `(3)` i README `(2)`.
+Zachowano warianty CMake oraz istniejące operacje testowe. Zmieniono obsługę wyników,
+inicjalizacji, danych i kosztów. Archiwum nie zawiera nieprzesłanych skryptów VM.
 
----
+## Uruchomienie w swoim repozytorium
 
-## 1. Architektura i badane mechanizmy
+Skopiuj zawartość tego katalogu do katalogu projektu z zachowaniem ścieżek.
+Zachowaj swoje skrypty VM. Usuń stare artefakty kompilacji lub użyj nowego katalogu
+projektu — nowe markery wymagają ponownego zbudowania binarek.
 
-Projekt bada **13 wariantów zabezpieczeń** w trzech domenach ochrony (przestrzenna, temporalna, integralność przepływu sterowania):
-
-| Mechanizm | Flagi kompilatora / linkera | Domena ochrony |
-| :--- | :--- | :--- |
-| **base** | `-O3 -march=armv8.5-a` | Brak ochrony (baseline) |
-| **lto** | `-flto=thin -fvisibility=hidden` | ThinLTO baseline (izolacja optymalizacji od CFI) |
-| **canary** | `-fstack-protector-all` | Stos (Stack Canary) |
-| **pac** | `-mbranch-protection=pac-ret` | Adres powrotu x30 / LR |
-| **bti** | `-mbranch-protection=bti -Wl,-z,now` | Lądowiska skoków pośrednich (`BTI C/J`) |
-| **pac_bti** | `-mbranch-protection=pac-ret+bti -Wl,-z,now` | ROP + JOP / COP |
-| **cfi** | `-flto=thin -fvisibility=hidden -fsanitize=cfi` | Sygnatury wywołań pośrednich i vtables (Forward-Edge) |
-| **cfi_pac_bti** | CFI + PAC + BTI | Kompleksowa ochrona sterowania (Forward + Backward) |
-| **scudo** | `-march=armv8.5-a+memtag -fsanitize=scudo` | Utwardzony alokator sterty (ochrona przed UAF / Double-Free) |
-| **mte_async** | `-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=async` | Sprzętowe tagowanie MTE (tryb asynchroniczny) |
-| **mte_sync** | `-march=armv8.5-a+memtag -fsanitize=memtag-stack -fsanitize-memtag-mode=sync` | Sprzętowe tagowanie MTE (tryb synchroniczny) |
-| **cfi_pac_bti_mte** | CFI + PAC + BTI + MTE-Sync + Scudo | Profil hybrydowy (sterowanie + pamięć MTE) |
-| **cfi_pac_bti_mte_fortify_bounds** | Profil hybrydowy + `-D_FORTIFY_SOURCE=3 -fsanitize=bounds` | Profil wielowarstwowy (weryfikacja granic buforów) |
-| **hwasan** | `-fsanitize=hwaddress -mllvm -hwasan-globals=1` | Programowe tagowanie pamięci (ARM TBI) |
-| **asan** | `-fsanitize=address` | Klasyczny AddressSanitizer (Shadow Memory 1/8) |
-
----
-
-## 2. Struktura repozytorium
-
-```
-.
-├── apps/
-│   ├── parser/                 # Parser binarny TLV (błędy przestrzenne P1..P6)
-│   ├── key_value_store/        # Składnica klucz-wartość (błędy temporalne M1..M3)
-│   └── dispatcher/             # Pętla zdarzeń i wirtualne metody (ataki na sterowanie D1..D4)
-├── common/
-│   └── utils.h                 # Precyzyjny licznik czasu ARM64 (cntvct_el0) oraz obsługa MTE/BTI
-├── data/                       # Deterministyczne zbiory wejściowe (SHA-256)
-├── scripts/
-│   ├── generate_datasets.py    # Deterministyczny generator datasetów
-│   ├── run_benchmarks.py       # Główny runner benchmarków, metryk i wykresów
-│   └── vm/                     # Skrypty konfiguracji i uruchomienia maszyny QEMU ARM64
-├── CMakeLists.txt              # Definicje 143 celów binarnych Clang / LLD
-└── README.md
-```
-
----
-
-## 3. Scenariusze ataków (13 wektorów testowych)
-
-1. **Pamięć przestrzenna (Spatial):**
-   - `P1_heap_overflow`: Przepełnienie bufora sterty (`malloc(16)` -> zapis 24B).
-   - `P2_stack_overflow`: Przepełnienie bufora stosu (zapis 64B do bufora 16B).
-   - `P3_global_overflow`: Przepełnienie bufora w sekcji globalnej `.bss/.data`.
-   - `P4_heap_oob_read`: Odczyt poza zaalokowany zakres bufora wejściowego.
-   - `P5_subgranule_overflow`: Przepełnienie wewnątrz 16-bajtowego kafelka MTE (8B alloc -> 12B copy).
-   - `P6_stack_dop`: Data-Oriented Programming (nadpisanie flagi `is_admin` bez modyfikacji ramki stosu).
-2. **Pamięć temporalna (Temporal):**
-   - `M1_use_after_free`: Zapis do zwolnionego obszaru pamięci na stercie.
-   - `M2_double_free`: Ponowne zwolnienie tego samego wskaźnika sterty.
-   - `M3_stack_use_after_scope`: Dostęp do zmiennej stosowej po wyjściu z bloku leksykalnego (`@llvm.lifetime.end`).
-3. **Integralność przepływu sterowania (Control Flow):**
-   - `D1_stack_smash`: Nadpisanie rejestru powrotu `x30` (LR) na stosie.
-   - `D2_indirect_call_hijack`: Podmiana wskaźnika funkcji na cel o **niezgodnej sygnaturze** (CFI Forward-Edge).
-   - `D2_bypass_cfi`: Podmiana wskaźnika funkcji na cel o **zgodnej sygnaturze** (teoretyczna granica CFI).
-   - `D3_vtable_hijack`: Podmiana wskaźnika tabeli wirtualnej `vptr` (Type Confusion / Vtable Hijack).
-   - `D4_bti_landing`: Skok pośredni na instrukcję bez lądowiska `BTI` (skok pod `fn + 4`).
-
----
-
-## 4. Instrukcja uruchomienia
-
-### Krok 1: Uruchomienie maszyny wirtualnej ARM64 (QEMU)
 ```bash
-# Na maszynie hosta:
-./scripts/vm/start_vm.sh
+python3 -m unittest discover -s tests -v
 
-# W osobnym terminalu:
-./scripts/vm/connect_vm.sh
-```
-
-### Krok 2: Generowanie powtarzalnych danych wejściowych
-```bash
+# Jednorazowa migracja z poprzedniego schematu seedów:
+# --force celowo zastępuje komplet wygenerowanych datasetów i manifest.
+python3 scripts/generate_datasets.py --force
 python3 scripts/generate_datasets.py --verify
+
+# W gościu AArch64 z Clang/Clang++, LLD, CMake i GNU time:
+python3 scripts/run_benchmarks.py --profile smoke --shuffle --seed 42
 ```
 
-### Krok 3: Wykonanie testów w maszynie VM
+Każdy przebieg zapisuje osobny katalog `results/<run_id>/`. Można podać
+`--output-dir results/moj_pomiar`, ale katalog musi być nowy lub pusty.
+`--environment-note` służy do zapisania wersji QEMU, akceleratora i komendy VM.
+Do rysowania potrzebny jest opcjonalny matplotlib; bez niego CSV i JSONL nadal
+powstają. Zależności pomiarowe: Python 3.10+, GNU time, readelf, Clang/Clang++,
+LLD, CMake oraz narzędzie budowania wybrane przez CMake.
 
-- **Szybka weryfikacja poprawności (Smoke Test, ~1 min):**
-  ```bash
-  python3 scripts/run_benchmarks.py --profile smoke
-  ```
+```bash
+python3 scripts/run_benchmarks.py --profile thesis --shuffle --seed 42 \
+  --environment-note 'Wpisz tutaj rzeczywistą konfigurację środowiska'
 
-- **Oficjalne pomiary do pracy magisterskiej (50 powtórzeń, losowa permutacja kolejności):**
-  ```bash
-  python3 scripts/run_benchmarks.py --profile thesis --shuffle
-  ```
+python3 scripts/run_benchmarks.py --plots-only --output-dir results/NAZWA_PRZEBIEGU
+```
 
----
+`--plots-only` czyta zapisane CSV. Nie buduje programu, nie pobiera rozmiarów
+aktualnych binarek i nie zmienia metadanych pomiaru. Stare CSV z poprzedniego
+klasyfikatora nie są automatycznie migrowane — wymagają ponownego pomiaru.
 
-## 5. Wyniki i artefakty analityczne
+Kody wyjścia runnera: `0` — kompletne wykonanie; `2` — błąd przygotowania;
+`3` — zapisano wyniki, ale wystąpiły nieważne próby lub nieudane pomiary.
+Kod `3` jest wskazówką walidacyjną, nie wynikiem skuteczności równym zero.
 
-Skrypt generuje kompletny zestaw tabel CSV oraz 22 wykresy PNG w rozdzielczości 300 DPI:
-- `benchmark_methodology_scores.csv` & `benchmark_cost_efficiency.csv`: Wskaźniki FTS (Fuzzing & Testing Score), PPS (Production Protection Score) oraz narzut chmurowy $C_{cloud}$.
-- `benchmark_efficacy_matrix.csv` & `benchmark_efficacy_heatmap.png`: Macierz skuteczności detekcji z precyzyjnym rozróżnieniem domenowym `N/A`.
-- `benchmark_efficacy_per_mechanism.csv` & `benchmark_efficacy_per_mechanism.png`: Rzeczywista skuteczność empiryczna wraz z **95% przedziałem ufności Wilsona**.
-- `benchmark_pareto_cloud.png`: Przestrzeń kompromisu Pareto między narzutem chmurowym ($C_{cloud}$) a pełnosystemową skutecznością produkcyjną ($S_{sys\_prod}$).
-- `benchmark_fts_vs_pps.png`: Porównanie opłacalności wdrożenia w środowisku deweloperskim/CI a środowisku produkcyjnym.
+## Znaczenie wyniku pojedynczej próby
+
+| Pole JSONL | Znaczenie |
+| --- | --- |
+| `valid` | Można ocenić próbę; błędy środowiska i niepotwierdzone awarie są nieważne. |
+| `detected` | Konkretny raport potwierdził detekcję naruszenia. |
+| `attack_triggered` | Zaobserwowano marker początku operacji lub raport dowodzący jej wykonania. |
+| `effect_occurred` | Zaobserwowano istniejący marker `EXPLOIT_SUCCESS`. |
+| `prevented` | Potwierdzony detektor zatrzymał wykonanie przed markerem skutku. |
+| `invalid_reason` | Powód wyłączenia z mianownika. |
+
+`prevented` nie dowodzi braku jakiejkolwiek częściowej korupcji pamięci.
+`effect_occurred` odnosi się do konkretnego miejsca markera: w P2 jest to wykonanie
+przepełnienia, a nie potwierdzenie przejęcia sterowania. Detekcja kanarka po tym
+markerze daje `detected=true`, `effect_occurred=true`, `prevented=false`.
+
+Pełne dane są w `benchmark_trials_log.jsonl`: stdout, stderr, komenda, wejście,
+hashe, PC, run_id i niezależne obserwacje. CSV jest tylko widokiem pomocniczym.
+`Liczba_Prob` w tabelach oznacza wyłącznie ważne próby. Zero ważnych prób daje
+pustą komórkę CSV / `None` w Pythonie, czyli N/A, a nie 0%.
+Starsza nazwa `Zablokowane_Proby` pozostała aliasem `Wykryte_Proby` dla zgodności
+formatu; przy interpretacji używaj nowych, jednoznacznych pól.
+
+## Potwierdzanie pułapek CFI, PAC i BTI
+
+Ogólny SIGSEGV/SIGILL nie wystarcza do przypisania mechanizmu. Sam D1 z C-owym
+buforem nadal zależy od wygenerowanej ramki, a D4 z `fn+4` wymaga sprawdzenia
+pierwszych instrukcji. Operacje tych scenariuszy nie zostały zmienione.
+Najpierw potwierdź układ i zamierzony wynik wariantu bazowego na swoim Clangu.
+
+Do zebrania assemblera bez uruchamiania testów:
+
+```bash
+python3 scripts/collect_disassembly.py --objdump objdump
+```
+
+Jeżeli lokalny objdump nie obsługuje AArch64, wskaż np. `llvm-objdump` albo
+`aarch64-linux-gnu-objdump`. Powstaje osobny tekst dla każdej binarki i szablon
+`assembly_review/trap_evidence.template.json`. Po przeglądzie skopiuj szablon
+na `trap_evidence.json` i uzupełnij wyłącznie potwierdzone miejsca. Przykład
+struktury jednego wpisu (wartości SHA i adresu są tutaj przykładowe):
+
+```json
+{
+  "schema_version": 1,
+  "binaries": {
+    "disp_D2_cfi": {
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sites": [
+        {
+          "mechanism": "CFI",
+          "signal": "SIGILL",
+          "pc_offset": "0x1234",
+          "review_note": "Uzasadnienie z przeglądu tej konkretnej binarki"
+        }
+      ]
+    }
+  }
+}
+```
+
+```bash
+python3 scripts/run_benchmarks.py --profile smoke --efficacy-only \
+  --trap-evidence trap_evidence.json
+```
+
+Klasyfikator wymaga zgodności SHA256 binarki, sygnału, offsetu PC i markera
+początku operacji. Nieznane miejsca zachowuje jako nieważne z pełnym logiem.
+Handler podaje `PC_OFFSET` względem początku obrazu ELF, aby ASLR nie wymuszał
+wpisywania adresów absolutnych. Przy PAC, gdy dostępny jest tylko uszkodzony
+adres docelowy poza obrazem, taka próba pozostaje niepotwierdzona; nie wpisuj
+zmyślonego miejsca pułapki. Ten fragment wymaga walidacji docelowego środowiska.
+
+## Dane i model kosztu
+
+- Niezależny seed jest przypisany do kanonicznej nazwy każdego datasetu.
+- Zwykłe uruchomienie sprawdza cały manifest przed zapisywaniem danych.
+- Brakujący plik jest publikowany dopiero po zgodności z zachowanym hashem.
+- `--force` jawnie odtwarza komplet; `--update-manifest` jawnie akceptuje
+  istniejący pełny komplet. Żadna z tych opcji nie jest wykonywana przez runner.
+- Koszt liczony jest per aplikacja, a dopiero potem uśredniany. Ta sama kolejność
+  jest używana w analizie wrażliwości. Zachowano rzeczywiste przyspieszenia.
+- Usunięto z warstwy pomiarowej współczynniki tau i obcinanie detekcji do
+  arbitralnych pułapów entropii. Ich badanie wymaga osobnego uzasadnionego modelu.
+- FTS/PPS są tu jawnymi heurystycznymi indeksami diagnostycznymi. Główną oceną
+  pozostają wyniki per scenariusz. Różne zestawy aplikacji i scenariuszy są
+  wypisane w tabelach; nie są podstawą automatycznego wspólnego rankingu.
+- Nieznane scenariusze nie są zastępowane zerami. Pełny indeks jest N/A, jeśli
+  nie ma kompletu ważnych pomiarów. Analiza wrażliwości używa jawnie wyniku na
+  faktycznie testowanym zbiorze i ma liniową oraz kwadratową postać indeksu.
+- Wilson CI jest wyznaczany per scenariusz dla powtarzanych wykonań. Nie jest
+  przedstawiany jako niepewność pokrycia wszystkich możliwych podatności.
+
+Wariant Scudo ma wyłączone pułapki MTE, ale nie zakłada się wyłączenia całego
+wewnętrznego tagowania alokatora. Runtime options są zachowane w metadanych.
+Domyślna konfiguracja zgodności z poprzednim runnerem wyłącza kwarantannę oraz
+kontrole size/type mismatch; można podać własne SCUDO_OPTIONS przed uruchomieniem.
+
+## Zakres sprawdzenia tej paczki
+
+46 testów automatycznych: klasyfikator, logowanie, nieważne próby, glibc,
+manifesty, koszty, integracja runnera i dopasowanie zweryfikowanego PC/SHA.
+Sprawdzono też generowanie wykresów i składnię C/C++ na x86-64 z flagami
+preprocesora projektu. Nie wykonano pełnego builda Clang/AArch64 ani pomiarów
+QEMU/chmurowych w tym środowisku. Szczegóły zmian są w `ZMIANY.md`.

@@ -40,6 +40,7 @@ void process_kv_workload(int num_records, int access_iterations) {
 #endif
 
 #ifdef BUG_M1
+  thesis_log_attack_trigger("M1_use_after_free");
   std::strcpy(target->data, "Malicious write");
   asm volatile("" : "+m"(*target->data) :: "memory");
   (void)getpid();
@@ -47,6 +48,7 @@ void process_kv_workload(int num_records, int access_iterations) {
 #endif
 
 #ifdef BUG_M2
+  thesis_log_attack_trigger("M2_double_free");
   std::free(target->data);
   (void)getpid();
   thesis_log_exploit_success("M2_double_free (Podwójne zwolnienie pamięci sterty wykonane bez wykrycia)");
@@ -66,6 +68,7 @@ void process_kv_workload(int num_records, int access_iterations) {
     char reused_scope_buf[32] = {1};
     char *reused_ptr = reused_scope_buf;
     asm volatile("" : "+r"(reused_ptr), "+m"(reused_scope_buf) :: "memory");
+    thesis_log_attack_trigger("M3_stack_use_after_scope");
     stack_uaf_ptr[0] = 'X';
     asm volatile("" : "+m"(stack_uaf_ptr[0]), "+m"(reused_scope_buf) :: "memory");
   }
