@@ -1,3 +1,13 @@
+# Terraform — pobrane wtyczki (providerzy) i stan lokalny
+infra/**/.terraform/
+infra/**/terraform.tfstate
+infra/**/terraform.tfstate.backup
+infra/**/.terraform.lock.hcl
+# Klucze SSH generowane przez Terraform
+infra/**/*.pem
+infra/**/*_rsa
+infra/**/*_ed25519
+
 # Build artifacts
 build/
 bin/
