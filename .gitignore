@@ -3,10 +3,13 @@ infra/**/.terraform/
 infra/**/terraform.tfstate
 infra/**/terraform.tfstate.backup
 infra/**/.terraform.lock.hcl
-# Klucze SSH generowane przez Terraform
+# Klucze SSH i tokeny GCP generowane przez Terraform
 infra/**/*.pem
 infra/**/*_rsa
 infra/**/*_ed25519
+infra/**/credentials.json
+infra/**/key.json
+infra/**/service-account*.json
 
 # Build artifacts
 build/
